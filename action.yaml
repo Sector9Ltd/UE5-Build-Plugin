@@ -1,0 +1,152 @@
+name: 'UE5-Build-Plugin'
+description: 'Build and package an Unreal Engine plugin with RunUAT BuildPlugin'
+author: 'Sector 9'
+branding:
+  icon: 'package'
+  color: 'green'
+
+inputs:
+  RUNUAT_PATH:
+    description: 'Path to RunUAT.bat'
+    required: true
+  UPLUGIN_PATH:
+    description: 'Path to the .uplugin file'
+    required: true
+  PACKAGE_PATH:
+    description: 'Where the packaged plugin is written. UAT DELETES THE CONTENTS of this directory before it builds, so give it a directory of its own. It must be outside the engine directory and must not contain the plugin being built - UAT refuses both.'
+    required: true
+  TARGET_PLATFORMS:
+    description: 'Comma-separated platforms to build for, e.g. Win64,Linux. Empty builds every platform the plugin declares.'
+    required: false
+    default: 'Win64'
+  HOST_PLATFORMS:
+    description: 'Comma-separated host platforms for the editor build. Empty means the platform this runner is.'
+    required: false
+    default: ''
+  NO_HOST_PLATFORM:
+    description: 'Skip the editor build entirely (runtime targets only).'
+    required: false
+    default: 'false'
+  STRICT_INCLUDES:
+    description: 'Compile each file without the unity blob, so a header a file forgot to include is an error here rather than in a customer editor. Defaults ON: this is the check CI exists for.'
+    required: false
+    default: 'true'
+  UNVERSIONED:
+    description: 'Package without stamping the engine version, for a plugin meant to load in more than one.'
+    required: false
+    default: 'false'
+  DEPENDENCIES:
+    description: 'Comma-separated paths to .uplugin files this plugin depends on.'
+    required: false
+    default: ''
+  ENGINE_DIR:
+    description: 'Engine directory, when it is not the one RunUAT belongs to.'
+    required: false
+    default: ''
+  ARCHIVE:
+    description: 'Zip the packaged plugin.'
+    required: false
+    default: 'false'
+  ARCHIVE_PATH:
+    description: 'Directory to write the zip into. Defaults to the parent of PACKAGE_PATH.'
+    required: false
+    default: ''
+  ARCHIVE_NAME:
+    description: 'Zip filename. Defaults to <PluginName>-<VersionName>.zip, read from the .uplugin.'
+    required: false
+    default: ''
+
+outputs:
+  VERSION_NAME:
+    description: 'VersionName from the .uplugin.'
+    value: ${{ steps.build.outputs.VERSION_NAME }}
+  PACKAGE_PATH:
+    description: 'The packaged plugin directory.'
+    value: ${{ steps.build.outputs.PACKAGE_PATH }}
+  ARCHIVE_FILE:
+    description: 'The zip, when ARCHIVE was true.'
+    value: ${{ steps.build.outputs.ARCHIVE_FILE }}
+
+runs:
+  using: 'composite'
+  steps:
+    - id: build
+      shell: powershell
+      run: |
+        $ErrorActionPreference = 'Stop'
+
+        $runUat   = "${{ inputs.RUNUAT_PATH }}"
+        $uplugin  = "${{ inputs.UPLUGIN_PATH }}"
+        $package  = "${{ inputs.PACKAGE_PATH }}"
+
+        foreach ($pair in @(@('RunUAT', $runUat), @('uplugin', $uplugin))) {
+          if (-not (Test-Path -LiteralPath $pair[1])) { throw "$($pair[0]) not found: $($pair[1])" }
+        }
+
+        # UAT wipes PACKAGE_PATH. Refuse to point it at something that is obviously not a build output,
+        # because the deletion is silent and total.
+        foreach ($guard in @('.git', '.github')) {
+          if (Test-Path -LiteralPath (Join-Path $package $guard)) {
+            throw "PACKAGE_PATH contains $guard - UAT deletes this directory's contents. Give it a directory of its own."
+          }
+        }
+        if (Get-ChildItem -LiteralPath $package -Filter *.uproject -ErrorAction SilentlyContinue) {
+          throw "PACKAGE_PATH holds a .uproject - UAT deletes this directory's contents. Give it a directory of its own."
+        }
+
+        $descriptor = Get-Content -LiteralPath $uplugin -Raw -Encoding UTF8
+        $descriptor = $descriptor -replace '^\xEF\xBB\xBF', ''   # UAT writes the descriptor with a BOM
+        $json = $descriptor | ConvertFrom-Json
+        $versionName = if ($json.VersionName) { $json.VersionName } else { '0.0' }
+        $pluginName  = [IO.Path]::GetFileNameWithoutExtension($uplugin)
+
+        # An argument array, not a string run through Invoke-Expression: engine and project paths routinely
+        # contain spaces ("Epic Games", "Unreal Projects") and this is where that goes wrong quietly.
+        $uatArgs = @('BuildPlugin', "-Plugin=$uplugin", "-Package=$package")
+
+        if ("${{ inputs.TARGET_PLATFORMS }}") { $uatArgs += "-TargetPlatforms=${{ inputs.TARGET_PLATFORMS }}" }
+        if ("${{ inputs.HOST_PLATFORMS }}")   { $uatArgs += "-HostPlatforms=${{ inputs.HOST_PLATFORMS }}" }
+        if ("${{ inputs.ENGINE_DIR }}")       { $uatArgs += "-EngineDir=${{ inputs.ENGINE_DIR }}" }
+        if ("${{ inputs.NO_HOST_PLATFORM }}" -eq 'true') { $uatArgs += '-NoHostPlatform' }
+        if ("${{ inputs.STRICT_INCLUDES }}"  -eq 'true') { $uatArgs += '-StrictIncludes' }
+        if ("${{ inputs.UNVERSIONED }}"      -eq 'true') { $uatArgs += '-unversioned' }
+
+        foreach ($dep in ("${{ inputs.DEPENDENCIES }}" -split ',' | Where-Object { $_.Trim() })) {
+          $uatArgs += "-Dependencies=$($dep.Trim())"
+        }
+
+        Write-Host "RunUAT $($uatArgs -join ' ')"
+        & $runUat @uatArgs
+
+        # BuildPlugin reports failure only through its exit code. Without this the job goes green on a
+        # plugin that did not compile, which is worse than no CI at all.
+        if ($LASTEXITCODE -ne 0) {
+          throw "RunUAT BuildPlugin failed with exit code $LASTEXITCODE"
+        }
+
+        "VERSION_NAME=$versionName" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+        "PACKAGE_PATH=$package"     | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+        if ("${{ inputs.ARCHIVE }}" -eq 'true') {
+          $archiveDir = "${{ inputs.ARCHIVE_PATH }}"
+          if (-not $archiveDir) { $archiveDir = Split-Path -Parent $package }
+          if (-not (Test-Path -LiteralPath $archiveDir)) {
+            New-Item -ItemType Directory -Path $archiveDir -Force | Out-Null
+          }
+
+          $archiveName = "${{ inputs.ARCHIVE_NAME }}"
+          if (-not $archiveName) { $archiveName = "$pluginName-$versionName.zip" }
+          $archiveFile = Join-Path $archiveDir $archiveName
+
+          # The zip holds <PluginName>/..., which is the shape a user drops into their Plugins folder.
+          $staging = Join-Path ([IO.Path]::GetTempPath()) ([Guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Path (Join-Path $staging $pluginName) -Force | Out-Null
+          Copy-Item -LiteralPath (Join-Path $package '*') -Destination (Join-Path $staging $pluginName) -Recurse -Force
+
+          if (Test-Path -LiteralPath $archiveFile) { Remove-Item -LiteralPath $archiveFile -Force }
+          Compress-Archive -Path (Join-Path $staging $pluginName) -DestinationPath $archiveFile
+          Remove-Item -LiteralPath $staging -Recurse -Force
+
+          Write-Host "Archived to $archiveFile"
+          "ARCHIVE_FILE=$archiveFile" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+        }
