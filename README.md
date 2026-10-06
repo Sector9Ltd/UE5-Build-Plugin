@@ -1,80 +1,76 @@
 # UE5-Build-Plugin
 
-Builds and packages an Unreal Engine plugin with `RunUAT BuildPlugin`.
+Build and package an Unreal plugin with RunUAT BuildPlugin.
 
-The sibling of [UE5-Build-Project](https://github.com/Sector9Ltd/UE5-Build-Project), which wraps
-`BuildCookRun`. They are separate actions because they are separate UAT commands with almost no
-arguments in common: cook, stage, pak, maps, server and anticheat mean nothing to a plugin, and
-`-StrictIncludes`, `-Dependencies` and `-NoHostPlatform` mean nothing to a cooked game.
+By [Sector 9](https://sector9.ltd). [Tool page](https://sector9.ltd/ue5-tools/build-plugin) | [Documentation](https://sector9.ltd/docs/ue5-tools/build-plugin/)
+
+## Requirements
+
+- A Windows runner. The step uses `shell: powershell`.
+- Unreal Engine installed on that runner, because the action calls the engine's `RunUAT.bat`. In practice that means a self-hosted runner.
+- Your plugin checked out on the runner, so `UPLUGIN_PATH` points at a real `.uplugin` file.
+- A directory for the packaged output that is yours alone. RunUAT deletes the contents of `PACKAGE_PATH` before it builds.
+
+Find `RunUAT.bat` under `Engine\Build\BatchFiles` in your engine install.
 
 ## Usage
 
-```yaml
-- uses: Sector9Ltd/UE5-Build-Plugin@v1
-  id: plugin
-  with:
-    RUNUAT_PATH: 'F:/Epic Games/UE_5.8/Engine/Build/BatchFiles/RunUAT.bat'
-    UPLUGIN_PATH: '${{ github.workspace }}/MyPlugin/MyPlugin.uplugin'
-    PACKAGE_PATH: '${{ runner.temp }}/PluginBuild'
-    TARGET_PLATFORMS: 'Win64'
-    ARCHIVE: 'true'
+`RUNUAT_PATH`, `UPLUGIN_PATH` and `PACKAGE_PATH` have no default and must be set. With only those, the action builds the plugin for Win64 with strict includes on. It does not zip anything.
 
-- run: echo "built ${{ steps.plugin.outputs.ARCHIVE_FILE }}"
+```yaml
+jobs:
+  build:
+    runs-on: [self-hosted, Windows]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: Sector9Ltd/UE5-Build-Plugin@1.1.0
+        with:
+          RUNUAT_PATH: C:\UE_5.8\Engine\Build\BatchFiles\RunUAT.bat
+          UPLUGIN_PATH: ${{ github.workspace }}\MyPlugin\MyPlugin.uplugin
+          PACKAGE_PATH: ${{ runner.temp }}\MyPlugin-package
 ```
 
-Pairs with [UE5-Semantic-Versioning](https://github.com/Sector9Ltd/UE5-Semantic-Versioning) once that
-action can write a `.uplugin`: tags drive `VersionName`, and `VersionName` names the zip.
+If RunUAT exits with a non-zero code, the step fails.
 
 ## Inputs
 
-| Input | Required | Default | Notes |
-| --- | :---: | --- | --- |
-| `RUNUAT_PATH` | yes | | Path to `RunUAT.bat`. |
-| `UPLUGIN_PATH` | yes | | Path to the `.uplugin`. |
-| `PACKAGE_PATH` | yes | | Output directory. **See the warning below.** |
-| `TARGET_PLATFORMS` | no | `Win64` | Comma separated. Empty builds everything the plugin declares. |
-| `HOST_PLATFORMS` | no | | Comma separated. Empty means this runner's platform. |
-| `NO_HOST_PLATFORM` | no | `false` | Skip the editor build; runtime targets only. |
-| `STRICT_INCLUDES` | no | `true` | See below. |
-| `UNVERSIONED` | no | `false` | Package without stamping the engine version. |
-| `DEPENDENCIES` | no | | Comma-separated `.uplugin` paths this plugin depends on. |
-| `ENGINE_DIR` | no | | When the engine is not the one `RunUAT` belongs to. |
-| `ARCHIVE` | no | `false` | Zip the result. |
-| `ARCHIVE_PATH` | no | parent of `PACKAGE_PATH` | Where the zip goes. |
-| `ARCHIVE_NAME` | no | `<PluginName>-<VersionName>.zip` | Read from the `.uplugin`. |
+Inputs are set under `with:`. The action compares each switch to the text `true`, so only `true` turns it on. Values are pasted into a PowerShell script between double quotes, so do not put a `"` in one.
+
+| Name               | Required | Default | Description                                                                                                                                                                                                                |
+| ------------------ | -------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `RUNUAT_PATH`      | Yes      | —       | Full path to `RunUAT.bat` in your engine install. The step fails if it does not exist.                                                                                                                                     |
+| `UPLUGIN_PATH`     | Yes      | —       | Full path to the `.uplugin` file. The action reads `VersionName` from it and takes the plugin name from its filename.                                                                                                      |
+| `PACKAGE_PATH`     | Yes      | —       | Directory the packaged plugin is written to. See the note below.                                                                                                                                                           |
+| `TARGET_PLATFORMS` | No       | `Win64` | Comma- or `+`-separated platforms to build for, such as `Win64,Linux` or `Win64+Linux`. The action turns commas into `+`, the separator RunUAT reads. The action adds `-TargetPlatforms` only when the value is non-empty. |
+| `HOST_PLATFORMS`   | No       | `""`    | Comma- or `+`-separated host platforms for the editor build. Commas become `+`, as for `TARGET_PLATFORMS`. Passed as `-HostPlatforms` when set. Empty passes no flag, which means the platform the runner is.              |
+| `NO_HOST_PLATFORM` | No       | `false` | `true` adds `-NoHostPlatform`, which skips the editor build and builds runtime targets only.                                                                                                                               |
+| `STRICT_INCLUDES`  | No       | `true`  | `true` adds `-StrictIncludes`, which compiles each file without the unity blob so a missing `#include` is an error. On by default; set `false` to turn it off.                                                             |
+| `UNVERSIONED`      | No       | `false` | `true` adds `-unversioned`, which packages without stamping the engine version, for a plugin meant to load in more than one.                                                                                               |
+| `DEPENDENCIES`     | No       | `""`    | Comma-separated paths to `.uplugin` files this plugin depends on. Each path, trimmed, becomes its own `-Dependencies=<path>` flag. Empty entries are skipped.                                                              |
+| `ENGINE_DIR`       | No       | `""`    | Engine directory, for when it is not the one `RunUAT.bat` belongs to. Passed as `-EngineDir` when set.                                                                                                                     |
+| `ARCHIVE`          | No       | `false` | `true` zips the packaged plugin after a successful build and sets the `ARCHIVE_FILE` output.                                                                                                                               |
+| `ARCHIVE_PATH`     | No       | `""`    | Directory to write the zip into, created if it is missing. Empty means the parent of `PACKAGE_PATH`. Read only when `ARCHIVE` is `true`.                                                                                   |
+| `ARCHIVE_NAME`     | No       | `""`    | Zip filename. Empty means `<PluginName>-<VersionName>.zip`, where the plugin name is the `.uplugin` filename without its extension. Read only when `ARCHIVE` is `true`.                                                    |
+
+`PACKAGE_PATH`: RunUAT deletes the contents of this directory before it builds, so give it a directory of its own. It must be outside the engine directory and must not contain the plugin being built. The action also refuses a directory that holds a `.git` or `.github` folder or any `.uproject` file.
 
 ## Outputs
 
-`VERSION_NAME`, `PACKAGE_PATH`, `ARCHIVE_FILE`.
+| Name           | Description                                                                     |
+| -------------- | ------------------------------------------------------------------------------- |
+| `VERSION_NAME` | `VersionName` from the `.uplugin`, or `0.0` when it has none.                   |
+| `PACKAGE_PATH` | The packaged plugin directory, as given in the `PACKAGE_PATH` input.            |
+| `ARCHIVE_FILE` | Full path of the zip. Set only when `ARCHIVE` is `true`; otherwise it is empty. |
 
-## PACKAGE_PATH is deleted
+Outputs are set only after RunUAT succeeds. Read them from a later step with the step's `id`, for example `${{ steps.plugin.outputs.ARCHIVE_FILE }}`.
 
-`BuildPlugin` calls `DeleteDirectoryContents` on `-Package=` before it builds
-(`BuildPluginCommand.Automation.cs`). It is silent and total. Give it a directory of its own.
+## Other UE5 Tools
 
-UAT itself refuses two cases — an output directory inside the engine, and one containing the plugin
-being built — but it will happily empty your documents folder. This action additionally refuses a
-`PACKAGE_PATH` that contains `.git`, `.github` or a `.uproject`, which covers the mistakes that
-actually happen.
+- [UE5-Build-Project](https://github.com/Sector9Ltd/UE5-Build-Project): Build, cook, stage, package and archive an Unreal project with RunUAT.
+- [UE5-Semantic-Versioning](https://github.com/Sector9Ltd/UE5-Semantic-Versioning): Work out the version and build number from Git tags and the project or plugin version.
+- [UE5-EOS-Config](https://github.com/Sector9Ltd/UE5-EOS-Config): Write Epic Online Services settings into DefaultEngine.ini, with an optional dedicated-server config.
 
-## STRICT_INCLUDES defaults to on
+## License
 
-UAT defaults it off; this action does not.
-
-Without it, files compile in a unity blob, where a missing `#include` is satisfied by whichever
-sibling file happens to share the blob. The file then fails to compile in a customer's editor,
-whose adaptive unity excludes recently-edited files and builds them alone. CI that does not catch
-this is CI that certifies a build the customer cannot make.
-
-Set it to `false` only if your plugin does not build with it and you have accepted that.
-
-## Exit codes
-
-`RunUAT` reports failure only through its exit code, so this action checks `$LASTEXITCODE` and
-throws. A wrapper that does not do this reports success for a plugin that never compiled.
-
-## Notes
-
-Arguments are passed as an array rather than assembled into a string and run through
-`Invoke-Expression`. Engine and project paths routinely contain spaces — `Epic Games`,
-`Unreal Projects` — and string assembly is where that breaks, usually silently.
+See [LICENSE](LICENSE).

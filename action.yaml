@@ -1,6 +1,6 @@
 name: 'UE5-Build-Plugin'
 description: 'Build and package an Unreal Engine plugin with RunUAT BuildPlugin'
-author: 'Sector 9'
+author: 'Sector 9, Ltd.'
 branding:
   icon: 'package'
   color: 'green'
@@ -16,11 +16,11 @@ inputs:
     description: 'Where the packaged plugin is written. UAT DELETES THE CONTENTS of this directory before it builds, so give it a directory of its own. It must be outside the engine directory and must not contain the plugin being built - UAT refuses both.'
     required: true
   TARGET_PLATFORMS:
-    description: 'Comma-separated platforms to build for, e.g. Win64,Linux. Empty builds every platform the plugin declares.'
+    description: 'Platforms to build for, separated by commas or +, e.g. Win64,Linux. Empty builds every platform the plugin declares.'
     required: false
     default: 'Win64'
   HOST_PLATFORMS:
-    description: 'Comma-separated host platforms for the editor build. Empty means the platform this runner is.'
+    description: 'Host platforms for the editor build, separated by commas or +. Empty means the platform this runner is.'
     required: false
     default: ''
   NO_HOST_PLATFORM:
@@ -104,8 +104,11 @@ runs:
         # contain spaces ("Epic Games", "Unreal Projects") and this is where that goes wrong quietly.
         $uatArgs = @('BuildPlugin', "-Plugin=$uplugin", "-Package=$package")
 
-        if ("${{ inputs.TARGET_PLATFORMS }}") { $uatArgs += "-TargetPlatforms=${{ inputs.TARGET_PLATFORMS }}" }
-        if ("${{ inputs.HOST_PLATFORMS }}")   { $uatArgs += "-HostPlatforms=${{ inputs.HOST_PLATFORMS }}" }
+        # BuildPlugin splits platform lists on +; accept commas too.
+        $targetPlatforms = "${{ inputs.TARGET_PLATFORMS }}" -replace '\s*,\s*', '+'
+        $hostPlatforms   = "${{ inputs.HOST_PLATFORMS }}" -replace '\s*,\s*', '+'
+        if ($targetPlatforms) { $uatArgs += "-TargetPlatforms=$targetPlatforms" }
+        if ($hostPlatforms)   { $uatArgs += "-HostPlatforms=$hostPlatforms" }
         if ("${{ inputs.ENGINE_DIR }}")       { $uatArgs += "-EngineDir=${{ inputs.ENGINE_DIR }}" }
         if ("${{ inputs.NO_HOST_PLATFORM }}" -eq 'true') { $uatArgs += '-NoHostPlatform' }
         if ("${{ inputs.STRICT_INCLUDES }}"  -eq 'true') { $uatArgs += '-StrictIncludes' }
